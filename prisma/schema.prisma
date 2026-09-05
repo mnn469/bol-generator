@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  USER
+  VIEWER
+}
+
+enum BolStatus {
+  ACTIVE
+  VOIDED
+}
+
+enum PdfStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users      CompanyUser[]
+  sequence   BolSequence?
+  template   BolTemplate?
+  bolRecords BolRecord[]
+  auditLogs  AuditLog[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  companies  CompanyUser[]
+  bolRecords BolRecord[]
+  auditLogs  AuditLog[]
+}
+
+model CompanyUser {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String
+  role      Role     @default(USER)
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId])
+}
+
+// One sequence per company. Numbers are assigned via an atomic
+// `UPDATE ... SET nextNumber = nextNumber + 1 RETURNING` inside a
+// transaction — see src/lib/bol/generateBolNumber.ts.
+model BolSequence {
+  id         String   @id @default(cuid())
+  companyId  String   @unique
+  prefix     String   @default("BOL")
+  nextNumber Int      @default(1)
+  padding    Int      @default(6)
+  updatedAt  DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+// PDF layout settings for a company's BOL/tally form. All coordinates are
+// in PDF points, origin bottom-left, matching pdf-lib's coordinate space.
+model BolTemplate {
+  id        String @id @default(cuid())
+  companyId String @unique
+  name      String
+  filePath  String
+
+  // Where the assigned BOL/tally number is drawn on each output page.
+  numberX        Float  @default(420)
+  numberY        Float  @default(760)
+  numberFontSize Float  @default(14)
+  numberPrefixText String @default("No. ")
+
+  // Optional white-out box to cover a pre-printed number baked into the
+  // source template (e.g. a scanned sample form), drawn before the new
+  // number is written. Leave disabled for a genuinely blank template.
+  coverExistingNumber Boolean @default(false)
+  coverX              Float   @default(400)
+  coverY              Float   @default(750)
+  coverWidth          Float   @default(160)
+  coverHeight         Float   @default(24)
+
+  // One output page is produced per label in copyLabels, each stamped with
+  // its label plus the BOL number. Empty array = a single unlabeled page.
+  copyLabels   String[] @default([])
+  copyLabelX   Float    @default(420)
+  copyLabelY   Float    @default(735)
+  copyFontSize Float    @default(11)
+
+  // Data-entry form shown before generating a BOL, and where each answer is
+  // drawn on every copy page. A JSON array of FieldDef (see
+  // src/lib/pdf/fieldTypes.ts) — lets each company's template define its
+  // own fields/layout without a schema change.
+  fields Json @default("[]")
+
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model BolRecord {
+  id                String    @id @default(cuid())
+  companyId         String
+  generatedByUserId String
+  bolNumber         String
+  numericNumber     Int
+  status            BolStatus @default(ACTIVE)
+  formData          Json?
+  // User-chosen text style for this BOL's form-field content (not the BOL
+  // number or copy label, which stay template-controlled). Null = use each
+  // field's own default from BolTemplate.fields.
+  textFontSize      Int?
+  textColor         String?
+  pdfPath           String?
+  pdfStatus         PdfStatus @default(PENDING)
+  generatedAt       DateTime  @default(now())
+  voidedAt          DateTime?
+  voidReason        String?
+
+  company         Company   @relation(fields: [companyId], references: [id])
+  generatedByUser User      @relation(fields: [generatedByUserId], references: [id])
+  auditLogs       AuditLog[]
+
+  @@unique([companyId, bolNumber])
+  @@unique([companyId, numericNumber])
+  @@index([companyId, generatedAt])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  companyId   String
+  userId      String
+  bolRecordId String?
+  action      String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  company   Company    @relation(fields: [companyId], references: [id])
+  user      User       @relation(fields: [userId], references: [id])
+  bolRecord BolRecord? @relation(fields: [bolRecordId], references: [id])
+
+  @@index([companyId, createdAt])
+}
