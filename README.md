@@ -104,70 +104,97 @@ A user can belong to multiple companies; they'll see a company picker after
 login if so — this is also how you'd add a second company to a deployment
 you already run, rather than giving it a separate deployment (see below).
 
-## Deploying for someone else (a different company, a different country)
+## Running it with Docker (recommended way to hand this to someone else)
 
-The app is already built to be run by someone other than you — every
-company's users, sequence, and template are isolated from every other
-company's (enforced at the database-query level, not just the UI). Two ways
-to hand it to someone:
+`docker-compose.yml` bundles the app with its own Postgres — no separate
+database to provision, no host-specific build/release commands to configure.
+This is the easiest way for someone else to run their own fully independent
+copy, on their own laptop or their own server, with zero dependency on your
+infrastructure or accounts.
 
-**Option A — they get their own separate deployment (most likely what you
-want for a friend running an unrelated company).** They run their own copy
-of this app, their own database, their own hosting bill, with zero
-dependency on your infrastructure. Steps:
+The seeded company (`prisma/seed.ts`) is not a generic demo in this
+repo — it's already configured for a specific company (name, BOL prefix,
+starting number, and its real template file/field layout), and the seeded
+admin login is meant to be that company's first real login. Seeding runs
+automatically on first start; it's skipped on every subsequent start (the
+entrypoint checks whether any company already exists in the database), so
+it's safe to leave in place — restarting the app later won't re-run it or
+touch anything an admin has since changed from the UI.
 
-1. **Get them the code.** Push this repo to a **private** GitHub repo and
-   add them as a collaborator (or just zip the folder — but GitHub makes
-   future updates way easier). Don't commit `.env` — it's already gitignored.
+### For personal use (on their own computer)
 
-2. **Pick a host.** This app needs somewhere to run Node.js continuously
-   *and* somewhere with a real disk, because generated PDFs and uploaded
-   templates are written to `storage/` on the local filesystem —
-   **serverless/edge platforms like plain Vercel won't work** without first
-   moving that to object storage (S3-compatible), which this version
-   doesn't do. [Render](https://render.com), [Railway](https://railway.app),
-   and [Fly.io](https://fly.io) all support a persistent disk plus a managed
-   Postgres, and are the easiest path right now. Render is probably the
-   simplest for someone without much DevOps background: one "Web Service"
-   for the app, one "Postgres" instance, one persistent disk mounted at the
-   app's working directory (or at least at `storage/`).
+One-time setup:
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+2. Install [Git](https://git-scm.com/downloads)
+3. Open a terminal
 
-3. **Set environment variables** on the host:
-   - `DATABASE_URL` — from the host's managed Postgres.
-   - `AUTH_SECRET` — a **new, unique** value, not the one in this repo's
-     `.env` (that one is dev-only and must never reach production). Generate
-     one with `npx auth secret` or `openssl rand -base64 32`.
-   - `AUTH_TRUST_HOST=true`.
+Run the app:
+```bash
+git clone <repo-url>
+cd bol-generator
+docker compose up -d
+```
 
-4. **Build/release commands.** `npm install` (which now also runs
-   `prisma generate` via `postinstall`), then `npm run build`. Before the
-   app first starts (most hosts have a "pre-deploy" or "release" command;
-   otherwise run it manually once via the host's shell), run
-   `npm run db:deploy` (`prisma migrate deploy` — the production-safe
-   equivalent of `db:migrate`, it doesn't prompt or generate new migrations,
-   just applies the ones already committed in `prisma/migrations/`).
+First run takes a few minutes (downloading images, installing, building,
+migrating, seeding). After that, it's fast.
 
-5. **Create their company and first admin** — run
-   `npm run create-company -- ...` (see above) against the production
-   database once it's reachable. Don't run `npm run db:seed` against their
-   database — that creates the demo Southside company, which they don't
-   want.
+Open a browser → **http://localhost:3000**
+Login with the seeded admin email and password from `prisma/seed.ts`
+(change it immediately after first login — there's no self-service reset).
 
-6. **Hand over the URL and the printed temporary password.** They should
-   change that password immediately, then from **Admin → BOL template**
-   upload their own company's blank BOL/tally PDF and set up its field
-   layout (see "Calibrating a BOL template" and "The data-entry form" below
-   — the same grid-overlay technique works for any template, not just the
-   one this demo ships with).
+To stop: `docker compose down` (data persists). To start again later:
+`docker compose up -d` from the same folder.
 
-**Option B — they become a second company on infrastructure you keep
-running.** Simpler if you don't mind staying the one paying for/maintaining
-hosting: just run `npm run create-company` against your existing production
-database and give them the login. Their data is fully isolated from any
-other company's, but they're depending on you to keep the app up. This is
-usually the wrong choice for "a friend's unrelated company in another
-country" and the right choice for, e.g., a second branch of the same
-business.
+### For server deployment (accessible via a public URL)
+
+Any Linux VPS works — DigitalOcean, Hetzner, AWS EC2, etc. 1GB RAM minimum.
+
+1. Install Docker on the server:
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   ```
+2. Clone the repo (same command as above) and `cd` into it.
+3. **Before starting it**, set a real `AUTH_SECRET` — don't run a
+   public-facing deployment on the default placeholder value baked into
+   `docker-compose.yml`:
+   ```bash
+   echo "AUTH_SECRET=$(openssl rand -base64 32)" > .env
+   ```
+4. Open port 3000 in the server's firewall (DigitalOcean: Networking →
+   Firewalls; AWS: Security Groups; a plain `ufw`/`iptables` server: allow
+   inbound TCP 3000).
+5. Start it:
+   ```bash
+   docker compose up -d
+   ```
+
+Access the app at `http://<server-ip>:3000`. For a real domain + HTTPS,
+put a reverse proxy (Caddy or nginx, either one terminates TLS for you) in
+front of it rather than exposing port 3000 directly — Caddy in particular
+gets you a free auto-renewing certificate with a couple of lines of config.
+
+To update after a code change: `git pull`, then
+`docker compose up -d --build` (rebuilds only the app image; the database
+and its data are untouched).
+
+### If you'd rather not run your own Postgres
+
+[Render](https://render.com), [Railway](https://railway.app), and
+[Fly.io](https://fly.io) all support a persistent disk plus a managed
+Postgres, if you'd prefer a host to run the database for you instead of the
+`db` service in `docker-compose.yml`. Plain Vercel and other serverless/edge
+platforms won't work as-is, since generated PDFs and uploaded templates are
+written to `storage/` on the local filesystem, not object storage. Point
+`DATABASE_URL` at the managed Postgres instead, set `AUTH_SECRET` /
+`AUTH_TRUST_HOST=true`, and run `npm run db:deploy` once before first start
+(the Docker entrypoint's equivalent of `prisma migrate deploy`).
+
+### Onboarding a second company later
+
+Either on your own deployment or someone else's, adding another company to
+an already-running instance doesn't need any of the above — just
+`npm run create-company -- ...` (see "Adding a new company") against
+whichever database is already live.
 
 ## Calibrating a BOL template
 

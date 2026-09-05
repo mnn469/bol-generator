@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+.env
+.env.local
+storage/generated/*
+!storage/generated/.gitkeep
+npm-debug.log*
